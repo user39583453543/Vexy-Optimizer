@@ -3,7 +3,7 @@
 # Public build: activation keys are NOT stored in plaintext.
 
 $ErrorActionPreference = 'Continue'
-$script:VexyVersion = '6.2.1-hardware-suite-parserfix'
+$script:VexyVersion = '6.3.0-resource-doctor'
 $script:RepoBase = 'https://raw.githubusercontent.com/user39583453543/Vexy-Optimizer/main'
 $script:ScriptUrl = "$script:RepoBase/Vexy-Optimizer.ps1"
 
@@ -756,6 +756,283 @@ VEXY can still optimize reversible Windows settings around the hardware without 
 }
 
 
+
+# =====================================================================
+# RESOURCE DOCTOR / PROCESS DIAGNOSTICS
+# On-demand only: these scans may sample CPU/GPU counters for about a second.
+# VEXY reports what is using resources but does not automatically terminate apps.
+# =====================================================================
+function Get-VexyProcessLabel([int]$ProcessId,[string]$Name) {
+    $critical = @('System','Idle','Registry','Memory Compression','smss','csrss','wininit','services','lsass','winlogon','dwm')
+    if ($critical -contains $Name) { return '[SYSTEM]' }
+    return '[APP]'
+}
+
+function Get-VexyTopRamData([int]$Top = 10) {
+    try {
+        return @(Get-Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Id -gt 0 -and $_.WorkingSet64 -gt 0 } |
+            Sort-Object WorkingSet64 -Descending |
+            Select-Object -First $Top |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Name = $_.ProcessName
+                    PID = $_.Id
+                    WorkingMB = [Math]::Round($_.WorkingSet64 / 1MB,1)
+                    PrivateMB = [Math]::Round($_.PrivateMemorySize64 / 1MB,1)
+                    Label = Get-VexyProcessLabel $_.Id $_.ProcessName
+                }
+            })
+    } catch { return @() }
+}
+
+function Get-VexyTopRamText([int]$Top = 12) {
+    $rows = @(Get-VexyTopRamData $Top)
+    if (-not $rows.Count) { return 'RAM process information is unavailable.' }
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('TOP RAM USERS')
+    [void]$lines.Add('Working set is memory currently resident in RAM. Private memory is memory owned by that process.')
+    [void]$lines.Add('')
+    foreach($r in $rows) {
+        [void]$lines.Add(('{0,-20} PID {1,-7} RAM {2,8:N1} MB   Private {3,8:N1} MB  {4}' -f $r.Name,$r.PID,$r.WorkingMB,$r.PrivateMB,$r.Label))
+    }
+    [void]$lines.Add('')
+    [void]$lines.Add('VEXY does not auto-kill processes because closing an app can lose unsaved work. Use Task Manager after identifying a non-system app you no longer need.')
+    return ($lines -join "`r`n")
+}
+
+function Get-VexyTopCpuData([int]$Top = 10,[int]$SampleMs = 850) {
+    try {
+        $logical = [Math]::Max(1,[Environment]::ProcessorCount)
+        $before = @{}
+        foreach($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+            try { $before[[int]$p.Id] = [double]$p.TotalProcessorTime.TotalSeconds } catch {}
+        }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Start-Sleep -Milliseconds $SampleMs
+        $sw.Stop()
+        $seconds = [Math]::Max(0.25,$sw.Elapsed.TotalSeconds)
+        $rows = New-Object System.Collections.Generic.List[object]
+        foreach($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+            try {
+                if($before.ContainsKey([int]$p.Id)) {
+                    $now = [double]$p.TotalProcessorTime.TotalSeconds
+                    $delta = [Math]::Max(0,$now - [double]$before[[int]$p.Id])
+                    $pct = [Math]::Min(100,[Math]::Max(0,($delta / $seconds / $logical) * 100.0))
+                    if($pct -ge 0.05) {
+                        [void]$rows.Add([pscustomobject]@{Name=$p.ProcessName;PID=$p.Id;Percent=[Math]::Round($pct,1);Label=(Get-VexyProcessLabel $p.Id $p.ProcessName)})
+                    }
+                }
+            } catch {}
+        }
+        return @($rows | Sort-Object Percent -Descending | Select-Object -First $Top)
+    } catch { return @() }
+}
+
+function Get-VexyTopCpuText([int]$Top = 12) {
+    $rows = @(Get-VexyTopCpuData $Top 850)
+    if (-not $rows.Count) { return 'No meaningful per-process CPU activity was captured during the short sample.' }
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('TOP CPU USERS — ~0.85 SECOND SAMPLE')
+    [void]$lines.Add('Percent is normalized across all logical processors, so this is a short snapshot rather than a long benchmark.')
+    [void]$lines.Add('')
+    foreach($r in $rows) {
+        [void]$lines.Add(('{0,-20} PID {1,-7} CPU {2,6:N1}%   {3}' -f $r.Name,$r.PID,$r.Percent,$r.Label))
+    }
+    return ($lines -join "`r`n")
+}
+
+function Get-VexyGpuProcessData([int]$Top = 10) {
+    try {
+        $samples = (Get-Counter '\GPU Engine(*)\Utilization Percentage' -SampleInterval 1 -MaxSamples 1 -ErrorAction Stop).CounterSamples
+        $map = @{}
+        foreach($s in $samples) {
+            $path = [string]$s.Path
+            if($path -match 'pid_(\d+)') {
+                $procId = [int]$matches[1]
+                $v = [double]$s.CookedValue
+                if(-not $map.ContainsKey($procId) -or $v -gt [double]$map[$procId]) { $map[$procId] = $v }
+            }
+        }
+        $rows = New-Object System.Collections.Generic.List[object]
+        foreach($procId in $map.Keys) {
+            if([double]$map[$procId] -lt 0.1) { continue }
+            $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
+            $name = if($p){$p.ProcessName}else{'PID-'+$procId}
+            [void]$rows.Add([pscustomobject]@{Name=$name;PID=$procId;Percent=[Math]::Round([Math]::Min(100,[double]$map[$procId]),1);Label=(Get-VexyProcessLabel $procId $name)})
+        }
+        return @($rows | Sort-Object Percent -Descending | Select-Object -First $Top)
+    } catch { return @() }
+}
+
+function Get-VexyGpuProcessText([int]$Top = 12) {
+    $rows = @(Get-VexyGpuProcessData $Top)
+    if (-not $rows.Count) {
+        return "GPU per-process counters were unavailable or no process showed measurable GPU-engine activity during the sample.`r`n`r`nThis can happen with some drivers, localized Windows counter names, or when the GPU is idle. Task Manager's Processes/Performance tabs are the fallback."
+    }
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('TOP GPU ENGINE USERS — APPROXIMATE SNAPSHOT')
+    [void]$lines.Add('VEXY uses Windows GPU Engine performance counters and reports the busiest engine seen for each PID. It is not a board-power or temperature reading.')
+    [void]$lines.Add('')
+    foreach($r in $rows) {
+        [void]$lines.Add(('{0,-20} PID {1,-7} GPU {2,6:N1}%   {3}' -f $r.Name,$r.PID,$r.Percent,$r.Label))
+    }
+    return ($lines -join "`r`n")
+}
+
+function Get-VexySystemResourceSnapshot {
+    $ramPercent = 0; $usedGB = 0; $totalGB = 0
+    try {
+        $m = New-Object VexyNative.MEMORYSTATUSEX
+        if([VexyNative.Memory]::GlobalMemoryStatusEx($m)) {
+            $ramPercent = [int]$m.dwMemoryLoad
+            $usedGB = [Math]::Round(($m.ullTotalPhys-$m.ullAvailPhys)/1GB,1)
+            $totalGB = [Math]::Round($m.ullTotalPhys/1GB,1)
+        }
+    } catch {}
+    $freePct = $null; $freeGB = $null
+    try {
+        $d = Get-Volume -DriveLetter $env:SystemDrive.TrimEnd(':') -ErrorAction Stop
+        if($d.Size -gt 0) {
+            $freePct = [Math]::Round(($d.SizeRemaining / $d.Size) * 100,1)
+            $freeGB = [Math]::Round($d.SizeRemaining/1GB,1)
+        }
+    } catch {}
+    $startupCount = 0
+    try { $startupCount = @(Get-CimInstance Win32_StartupCommand -ErrorAction SilentlyContinue).Count } catch {}
+    return [pscustomobject]@{RamPercent=$ramPercent;RamUsedGB=$usedGB;RamTotalGB=$totalGB;SystemDriveFreePct=$freePct;SystemDriveFreeGB=$freeGB;StartupCount=$startupCount}
+}
+
+function Get-VexyRecommendationText {
+    $snap = Get-VexySystemResourceSnapshot
+    $ramTop = @(Get-VexyTopRamData 6)
+    $cpuTop = @(Get-VexyTopCpuData 6 700)
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('VEXY RECOMMENDATIONS')
+    [void]$lines.Add('Recommendations are based on the current snapshot. They are not guarantees of more FPS.')
+    [void]$lines.Add('')
+
+    if($snap.RamPercent -ge 85) {
+        [void]$lines.Add("• RAM is high at $($snap.RamPercent)% ($($snap.RamUsedGB)/$($snap.RamTotalGB) GB). Run TOP RAM USERS, close unused normal apps/tabs, and review STARTUP SCAN.")
+    } elseif($snap.RamPercent -ge 70) {
+        [void]$lines.Add("• RAM is moderately high at $($snap.RamPercent)%. Run TOP RAM USERS before changing Windows settings.")
+    } else {
+        [void]$lines.Add("• RAM load is $($snap.RamPercent)%, so memory pressure is not currently severe.")
+    }
+
+    if($cpuTop.Count -and [double]$cpuTop[0].Percent -ge 25) {
+        [void]$lines.Add("• $($cpuTop[0].Name) was the top CPU process at about $($cpuTop[0].Percent)% during the short sample. If it is a normal app you are not using, close it normally; do not terminate Windows system processes.")
+    } else {
+        [void]$lines.Add('• No single app dominated CPU during the short sample. If CPU spikes are intermittent, run RESOURCE DOCTOR while the slowdown is happening.')
+    }
+
+    $edge = @($ramTop | Where-Object Name -eq 'msedge' | Select-Object -First 1)
+    if($edge.Count -and [double]$edge[0].WorkingMB -ge 700) {
+        [void]$lines.Add("• Microsoft Edge is using about $([Math]::Round($edge[0].WorkingMB)) MB in the snapshot. If you do not use Edge, enable EDGE BACKGROUND OFF on the DEBLOAT page; this disables Startup Boost/background mode but leaves Windows web components intact.")
+    }
+    $one = @($ramTop | Where-Object Name -eq 'OneDrive' | Select-Object -First 1)
+    if($one.Count) {
+        [void]$lines.Add('• OneDrive is running. If you do not use cloud sync, the DEBLOAT page can launch its supported uninstaller after a warning. Make sure syncing is complete first.')
+    }
+
+    if($snap.StartupCount -ge 18) {
+        [void]$lines.Add("• Windows reports about $($snap.StartupCount) startup entries. Run STARTUP SCAN and disable only apps you recognize and do not need at sign-in.")
+    }
+    if($null -ne $snap.SystemDriveFreePct -and [double]$snap.SystemDriveFreePct -lt 15) {
+        [void]$lines.Add("• System drive free space is low at about $($snap.SystemDriveFreePct)% ($($snap.SystemDriveFreeGB) GB). Run TEMP CLEAN and review STORAGE SENSE.")
+    }
+
+    [void]$lines.Add('')
+    [void]$lines.Add('GOOD ORDER TO RUN VEXY:')
+    [void]$lines.Add('1. RESOURCE DOCTOR')
+    [void]$lines.Add('2. STARTUP SCAN')
+    [void]$lines.Add('3. TEMP CLEAN if storage is low')
+    [void]$lines.Add('4. GAME MODE / GAME CAPTURE OFF if you game')
+    [void]$lines.Add('5. Advanced switches only when their trade-off actually matches a problem you have')
+    return ($lines -join "`r`n")
+}
+
+function Get-VexyResourceDoctorReport {
+    $snap = Get-VexySystemResourceSnapshot
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('VEXY RESOURCE DOCTOR')
+    [void]$lines.Add("RAM: $($snap.RamPercent)%  •  $($snap.RamUsedGB) / $($snap.RamTotalGB) GB")
+    if($null -ne $snap.SystemDriveFreePct){ [void]$lines.Add("System drive free: $($snap.SystemDriveFreePct)%  •  $($snap.SystemDriveFreeGB) GB") }
+    [void]$lines.Add("Startup entries reported: $($snap.StartupCount)")
+    [void]$lines.Add('')
+    [void]$lines.Add((Get-VexyTopRamText 8))
+    [void]$lines.Add('')
+    [void]$lines.Add((Get-VexyTopCpuText 8))
+    [void]$lines.Add('')
+    [void]$lines.Add((Get-VexyGpuProcessText 8))
+    [void]$lines.Add('')
+    [void]$lines.Add((Get-VexyRecommendationText))
+    return ($lines -join "`r`n")
+}
+
+# =====================================================================
+# OPTIONAL MICROSOFT APP / BACKGROUND CONTROLS
+# These do not disable Defender, Windows Update, WebView2, Recovery, or other
+# Windows security/emergency components.
+# =====================================================================
+function Test-VexyEdgeBackgroundOff {
+    $p='HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+    $a=Get-VexyRegValue $p 'StartupBoostEnabled' $null
+    $b=Get-VexyRegValue $p 'BackgroundModeEnabled' $null
+    return ($null -ne $a -and $null -ne $b -and [int]$a -eq 0 -and [int]$b -eq 0)
+}
+
+function Set-VexyEdgeBackgroundOffState([bool]$Disabled) {
+    $p='HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+    New-Item $p -Force | Out-Null
+    if($Disabled) {
+        Set-ItemProperty $p -Name StartupBoostEnabled -Type DWord -Value 0 -Force
+        Set-ItemProperty $p -Name BackgroundModeEnabled -Type DWord -Value 0 -Force
+        Set-ItemProperty $p -Name LaunchEdgeOnWindowsStartupEnabled -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
+        return 'Edge Startup Boost/background mode/automatic visible startup are disabled by policy. Open Edge tabs still work. Restart Edge or sign out/in for all changes to settle.'
+    }
+    Remove-ItemProperty $p -Name StartupBoostEnabled -ErrorAction SilentlyContinue
+    Remove-ItemProperty $p -Name BackgroundModeEnabled -ErrorAction SilentlyContinue
+    Remove-ItemProperty $p -Name LaunchEdgeOnWindowsStartupEnabled -ErrorAction SilentlyContinue
+    return 'VEXY Edge background/startup policies removed; Edge returns to its user/default configuration.'
+}
+
+function Test-VexyOneDriveInstalled {
+    try {
+        if(Test-Path (Join-Path $env:LOCALAPPDATA 'Microsoft\OneDrive\OneDrive.exe')) { return $true }
+        if(Test-Path (Join-Path $env:SystemRoot 'System32\OneDriveSetup.exe')) { return $true }
+        if(Test-Path (Join-Path $env:SystemRoot 'SysWOW64\OneDriveSetup.exe')) { return $true }
+        $roots=@('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
+        foreach($r in $roots){
+            if(Get-ItemProperty $r -ErrorAction SilentlyContinue | Where-Object DisplayName -eq 'Microsoft OneDrive' | Select-Object -First 1){ return $true }
+        }
+    } catch {}
+    return $false
+}
+
+function Remove-VexyOneDrive {
+    if(-not (Test-VexyOneDriveInstalled)) { return 'Microsoft OneDrive does not appear to be installed.' }
+    $candidates=@(
+        (Join-Path $env:LOCALAPPDATA 'Microsoft\OneDrive\Update\OneDriveSetup.exe'),
+        (Join-Path $env:SystemRoot 'System32\OneDriveSetup.exe'),
+        (Join-Path $env:SystemRoot 'SysWOW64\OneDriveSetup.exe')
+    ) | Select-Object -Unique
+    foreach($exe in $candidates) {
+        if(Test-Path $exe) {
+            try {
+                Start-Process -FilePath $exe -ArgumentList '/uninstall' -Wait -ErrorAction Stop
+                Start-Sleep -Milliseconds 600
+                if(-not (Test-VexyOneDriveInstalled)) { return 'Microsoft OneDrive was uninstalled. Cloud files remain in OneDrive online; VEXY did not delete your OneDrive folders or files.' }
+                return 'The OneDrive uninstaller finished. Windows may need a sign-out/restart to remove the remaining shell entry.'
+            } catch {}
+        }
+    }
+    try {
+        Start-Process 'ms-settings:appsfeatures'
+        return 'VEXY could not locate the OneDrive setup uninstaller, so Installed Apps was opened. Select Microsoft OneDrive > Uninstall.'
+    } catch { return 'OneDrive uninstall could not be started.' }
+}
+
 # =====================================================================
 # VEXY TOGGLE ENGINE
 # These functions expose reversible on/off states for the switch UI.
@@ -989,6 +1266,10 @@ $script:ToggleHandlers = @{
     DeliveryP2POff = @{
         Get = { Test-VexyDeliveryP2POff }
         Set = { param($state) Set-VexyDeliveryP2POffState $state }
+    }
+    EdgeBackgroundOff = @{
+        Get = { Test-VexyEdgeBackgroundOff }
+        Set = { param($state) Set-VexyEdgeBackgroundOffState $state }
     }
 }
 
@@ -1347,6 +1628,8 @@ $script:Pages = @{
         @{Title='GAME CAPTURE OFF'; Desc='Stop Windows background game recording.'; Info='When ON, disables Windows Game DVR/background capture for the current user. This can reduce background recording activity, but Xbox/Windows capture shortcuts and background clips will no longer work until switched back OFF.'; Icon='gpu'; Toggle='GameCaptureOff'; Kind='Toggle'; Risk='Warning'},
         @{Title='HIGH PERFORMANCE'; Desc='Use Windows High Performance power plan.'; Info='When ON, selects the Windows High Performance power plan. It can improve responsiveness on some systems, but it increases power consumption and may increase temperatures, battery drain and fan noise. OFF restores Balanced.'; Icon='boost'; Toggle='HighPerformance'; Kind='Toggle'; Risk='Warning'},
         @{Title='HARDWARE'; Desc='Open hardware monitoring and system information.'; Info='Opens the VEXY Hardware page. It reads CPU, GPU, RAM, motherboard, BIOS, storage and network information without changing CPU/GPU voltage, clocks or firmware.'; Icon='cpu'; Action='OpenHardware'; Kind='Action'; Risk='Normal'},
+        @{Title='RESOURCE DOCTOR'; Desc='Find the apps using your CPU, RAM and GPU.'; Info='Runs an on-demand process scan. RAM is read instantly, CPU is sampled briefly, and GPU engine activity is read from Windows performance counters when available. VEXY does not automatically terminate apps.'; Icon='diagnostics'; Action='ResourceDoctor'; Kind='Action'; Risk='Normal'},
+        @{Title='DEBLOAT'; Desc='Optional Edge and OneDrive background controls.'; Info='Opens optional Microsoft-app controls. Edge background/startup behavior can be disabled without removing Windows web components. OneDrive can be uninstalled after an explicit warning.'; Icon='cleaner'; Action='OpenDebloat'; Kind='Action'; Risk='Warning'},
         @{Title='TEMP CLEAN'; Desc='Clear deletable files from your user TEMP folder.'; Info='Deletes files Windows and apps have placed in your current user TEMP folder. Locked/in-use files are skipped. It does not intentionally delete Documents, Downloads, Desktop or game saves.'; Icon='temp_clean'; Action='TempClean'; Kind='Action'; Risk='Normal'},
         @{Title='DISK TRIM'; Desc='Request Windows retrim on eligible fixed drives.'; Info='Uses Windows Optimize-Volume with ReTrim on eligible fixed volumes. This is intended for SSD/TRIM maintenance and lets Windows decide what is supported.'; Icon='disk'; Action='DiskTrim'; Kind='Action'; Risk='Normal'},
         @{Title='ADVANCED'; Desc='Open experimental options with clear trade-offs.'; Info='Opens VEXY Advanced / Experimental. These settings are reversible but can increase power use, change networking behavior, or require a reboot. Read each information tooltip before switching one on.'; Icon='advanced'; Action='OpenAdvanced'; Kind='Action'; Risk='Advanced'}
@@ -1425,6 +1708,24 @@ $script:Pages = @{
         @{Title='TASK MANAGER'; Desc='Open Windows live performance graphs.'; Info='Opens Task Manager, where Windows exposes CPU, memory, disk, network and GPU utilization graphs.'; Icon='diagnostics'; Action='OpenTaskManager'; Kind='Action'; Risk='Normal'},
         @{Title='OVERCLOCKING SAFETY'; Desc='Read why hardware tuning stays monitoring-only.'; Info='VEXY does not automatically set CPU/GPU clocks, voltages, PBO, Curve Optimizer, EXPO/XMP or firmware values because stability and safe limits depend on the exact hardware and cooling.'; Icon='advanced'; Action='TuningSafety'; Kind='Action'; Risk='Advanced'}
     )
+    diagnostics = @(
+        @{Title='RESOURCE DOCTOR'; Desc='Full CPU / RAM / GPU process scan plus recommendations.'; Info='Runs a combined diagnostic report. CPU and GPU are short samples, so run it while the slowdown is actually happening. It never kills a process automatically.'; Icon='diagnostics'; Action='ResourceDoctor'; Kind='Action'; Risk='Normal'},
+        @{Title='TOP RAM USERS'; Desc='Rank processes by current RAM use.'; Info='Shows working set and private memory for the biggest processes. System processes are labelled so you do not accidentally treat them like normal apps.'; Icon='memory'; Action='TopRam'; Kind='Action'; Risk='Normal'},
+        @{Title='TOP CPU USERS'; Desc='Sample which processes are using CPU now.'; Info='Takes a short CPU-time sample and ranks active processes. Because it is a snapshot, run it while the PC is lagging or a game/app is stuttering.'; Icon='cpu'; Action='TopCpu'; Kind='Action'; Risk='Normal'},
+        @{Title='GPU PROCESS LOAD'; Desc='Find apps using Windows GPU engines.'; Info='Uses Windows GPU Engine performance counters when the driver exposes them. It is approximate per-process engine activity, not temperature, wattage or a hardware stress test.'; Icon='gpu'; Action='TopGpu'; Kind='Action'; Risk='Normal'},
+        @{Title='RECOMMENDATIONS'; Desc='Tell me which VEXY actions actually make sense right now.'; Info='Looks at RAM pressure, a short CPU sample, startup-entry count, free system-drive space, and common apps such as Edge/OneDrive, then recommends specific VEXY cards rather than blindly applying every tweak.'; Icon='optimize'; Action='Recommendations'; Kind='Action'; Risk='Normal'},
+        @{Title='STARTUP SCAN'; Desc='See what launches when Windows starts.'; Info='Lists common startup entries without disabling them. Disable only software you recognize and do not need at sign-in.'; Icon='startup'; Action='StartupScan'; Kind='Action'; Risk='Normal'},
+        @{Title='TASK MANAGER'; Desc='Open Windows for deeper live process control.'; Info='Use Task Manager after Resource Doctor identifies a normal app. VEXY does not automatically end tasks because unsaved work could be lost.'; Icon='tools'; Action='OpenTaskManager'; Kind='Action'; Risk='Normal'},
+        @{Title='TEMP CLEAN'; Desc='Clear user temporary files if storage is tight.'; Info='Deletes deletable files from your user TEMP folder only; locked files are skipped.'; Icon='temp_clean'; Action='TempClean'; Kind='Action'; Risk='Normal'}
+    )
+    debloat = @(
+        @{Title='EDGE BACKGROUND OFF'; Desc='Stop Edge Startup Boost and background mode.'; Info='When ON, uses documented Microsoft Edge policies to disable Startup Boost, background mode, and automatic visible startup. Normal Edge browsing and Windows web components remain available. OFF removes the VEXY policies.'; Icon='windows'; Toggle='EdgeBackgroundOff'; Kind='Toggle'; Risk='Warning'},
+        @{Title='UNINSTALL ONEDRIVE'; Desc='Remove the OneDrive desktop sync client.'; Info='Starts Microsoft OneDrive''s own uninstaller after confirmation. VEXY does not delete your OneDrive cloud data or manually delete your OneDrive folder. Make sure syncing has finished before uninstalling.'; Icon='cleaner'; Action='UninstallOneDrive'; Kind='Action'; Risk='Advanced'},
+        @{Title='INSTALLED APPS'; Desc='Open Windows Installed Apps for anything else you do not use.'; Info='Opens the official Windows Installed Apps page. Removing random Windows components can break dependencies, so VEXY leaves extra app removal under your control.'; Icon='windows'; Action='OpenAppsSettings'; Kind='Action'; Risk='Normal'},
+        @{Title='DEFAULT APPS'; Desc='Choose another browser and app defaults.'; Info='Opens Windows Default Apps. This is the supported way to choose another browser instead of trying to rip out Windows web components.'; Icon='settings'; Action='OpenDefaultApps'; Kind='Action'; Risk='Normal'},
+        @{Title='GAME CAPTURE OFF'; Desc='Disable Windows background game recording.'; Info='Turns off Game DVR/background capture for the current user. Useful if you never record clips; turn it back OFF if you want capture features again.'; Icon='game_mode'; Toggle='GameCaptureOff'; Kind='Toggle'; Risk='Warning'},
+        @{Title='DELIVERY P2P OFF'; Desc='Stop Windows update peer-to-peer sharing.'; Info='Disables Delivery Optimization peer sharing while normal Microsoft HTTP/CDN downloads still work. This can reduce background peer traffic.'; Icon='network'; Toggle='DeliveryP2POff'; Kind='Toggle'; Risk='Advanced'}
+    )
     settings = @(
         @{Title='MUSIC ON / OFF'; Desc='Toggle the VEXY background track.'; Info='Pauses or resumes the VEXY background music only. This does not affect Windows audio settings.'; Icon='settings'; Action='ToggleMusic'; Kind='Action'; Risk='Normal'},
         @{Title='LICENSE INFO'; Desc='Show current license duration and remaining time.'; Info='Displays the active VEXY license label and remaining time stored for this Windows user.'; Icon='about'; Action='LicenseInfo'; Kind='Action'; Risk='Normal'},
@@ -1449,6 +1750,8 @@ $script:PageTitles = @{
     backup=@('BACKUP / RESTORE','CREATE A RECOVERY POINT OR SAVE A CONFIGURATION BASELINE BEFORE CHANGES.')
     advanced=@('ADVANCED / EXPERIMENTAL','THESE CAN HELP SOME SYSTEMS AND HURT OTHERS. READ THE ⓘ BEFORE SWITCHING THEM ON.')
     hardware=@('HARDWARE / MONITORING','READ-ONLY COMPONENT DATA. VEXY DOES NOT AUTOMATE VOLTAGE, CLOCK OR BIOS TUNING.')
+    diagnostics=@('RESOURCE DOCTOR','FIND WHAT IS USING CPU, RAM AND GPU — THEN RUN ONLY THE FIXES THAT MATCH THE PROBLEM.')
+    debloat=@('OPTIONAL DEBLOAT','REVERSIBLE BACKGROUND CONTROLS PLUS A CONFIRMED ONEDRIVE UNINSTALLER. WINDOWS SECURITY COMPONENTS STAY INTACT.')
     settings=@('VEXY SETTINGS','CONTROL MUSIC AND OPEN OFFICIAL WINDOWS CONFIGURATION PAGES.')
     about=@('ABOUT VEXY','VEXY OPTIMIZER • WINDOWS PERFORMANCE UTILITY.')
 }
@@ -1774,6 +2077,15 @@ function Invoke-VexyAction($Item) {
         'CloudflareDns' { if(Confirm-Vexy 'ADVANCED: CHANGE DNS' 'This replaces DNS servers on active physical adapters with Cloudflare 1.1.1.1 / 1.0.0.1 until you set DNS back to Automatic or another provider. Continue?'){ Run-VexyResult 'DNS change' { Set-VexyCloudflareDns } } }
         'VisualPerformance' { if(Confirm-Vexy 'VISUAL PERFORMANCE' 'This requests Windows Best Performance visual effects and may reduce animations/visual polish. Continue?'){ Run-VexyResult 'Visual effects' { Set-VexyVisualPerformance } } }
         'OpenHardware' { Render-VexyPage 'hardware' }
+        'OpenDiagnostics' { Render-VexyPage 'diagnostics' }
+        'OpenDebloat' { Render-VexyPage 'debloat' }
+        'ResourceDoctor' { Show-VexyReport 'VEXY RESOURCE DOCTOR' (Get-VexyResourceDoctorReport); Add-VexyLog 'Resource Doctor scan completed.' }
+        'TopRam' { Show-VexyReport 'TOP RAM USERS' (Get-VexyTopRamText 14); Add-VexyLog 'RAM process scan completed.' }
+        'TopCpu' { Show-VexyReport 'TOP CPU USERS' (Get-VexyTopCpuText 14); Add-VexyLog 'CPU process sample completed.' }
+        'TopGpu' { Show-VexyReport 'GPU PROCESS LOAD' (Get-VexyGpuProcessText 14); Add-VexyLog 'GPU process sample completed.' }
+        'Recommendations' { Show-VexyReport 'VEXY RECOMMENDATIONS' (Get-VexyRecommendationText); Add-VexyLog 'Resource recommendations generated.' }
+        'UninstallOneDrive' { if(Confirm-Vexy 'UNINSTALL MICROSOFT ONEDRIVE' "Make sure OneDrive has finished syncing before continuing.`n`nThis starts Microsoft's OneDrive uninstaller. VEXY will not delete your cloud files or manually delete your OneDrive folder.`n`nContinue?"){ Run-VexyResult 'OneDrive uninstall' { Remove-VexyOneDrive } } }
+        'OpenDefaultApps' { Add-VexyLog (Open-VexySettingsUri 'ms-settings:defaultapps' 'Windows Default Apps') }
         'HardwareReport' { Show-VexyReport 'FULL HARDWARE REPORT' (Get-VexyFullHardwareReport); Add-VexyLog 'Hardware report opened.' }
         'CpuReport' { Show-VexyReport 'CPU SNAPSHOT' (Get-VexyCpuReport); Add-VexyLog 'CPU snapshot opened.' }
         'GpuReport' { Show-VexyReport 'GPU SNAPSHOT' (Get-VexyGpuReport); Add-VexyLog 'GPU snapshot opened.' }
@@ -1801,7 +2113,7 @@ function Invoke-VexyAction($Item) {
 # Navigation
 $navItems = @(
     @('⌂  DASHBOARD','dashboard'),@('🚀  OPTIMIZE','optimize'),@('▱  CLEANER','cleaner'),@('ϟ  BOOST','boost'),
-    @('◈  HARDWARE','hardware'),@('🛠  TOOLS','tools'),@('≡  TWEAKS','tweaks'),@('◇  BACKUP','backup'),
+    @('◈  HARDWARE','hardware'),@('◉  DIAGNOSTICS','diagnostics'),@('◫  DEBLOAT','debloat'),@('🛠  TOOLS','tools'),@('≡  TWEAKS','tweaks'),@('◇  BACKUP','backup'),
     @('⚠  ADVANCED','advanced'),@('⚙  SETTINGS','settings'),@('ⓘ  ABOUT','about')
 )
 foreach($n in $navItems){
