@@ -3,7 +3,7 @@
 # Public build: activation keys are NOT stored in plaintext.
 
 $ErrorActionPreference = 'Continue'
-$script:VexyVersion = '6.2.0-hardware-suite'
+$script:VexyVersion = '6.2.1-hardware-suite-parserfix'
 $script:RepoBase = 'https://raw.githubusercontent.com/user39583453543/Vexy-Optimizer/main'
 $script:ScriptUrl = "$script:RepoBase/Vexy-Optimizer.ps1"
 
@@ -476,7 +476,7 @@ function Get-VexyMemoryReport {
         $i = 1
         foreach ($m in $mods) {
             $speed = if ($m.ConfiguredClockSpeed) { "$($m.ConfiguredClockSpeed) MT/s" } elseif ($m.Speed) { "$($m.Speed) MT/s" } else { 'Not reported' }
-            [void]$lines.Add("DIMM $i: $(ConvertTo-VexySize ([double]$m.Capacity)) | $speed | $($m.Manufacturer) $($m.PartNumber)")
+            [void]$lines.Add("DIMM ${i}: $(ConvertTo-VexySize ([double]$m.Capacity)) | $speed | $($m.Manufacturer) $($m.PartNumber)")
             $i++
         }
         [void]$lines.Add('')
