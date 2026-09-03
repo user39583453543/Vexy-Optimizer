@@ -1,9 +1,9 @@
-# VEXY Optimizer - V6 prototype
+﻿# VEXY Optimizer - V6 prototype
 # Windows PowerShell 5.1 / WPF
 # Public build: activation keys are NOT stored in plaintext.
 
 $ErrorActionPreference = 'Continue'
-$script:VexyVersion = '6.0.2-enterfix'
+$script:VexyVersion = '6.0.3-card-sidebar-fix'
 $script:RepoBase = 'https://raw.githubusercontent.com/user39583453543/Vexy-Optimizer/main'
 $script:ScriptUrl = "$script:RepoBase/Vexy-Optimizer.ps1"
 
@@ -434,6 +434,36 @@ function Get-VexyDiagnosticsText {
                 <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="#8E2FE8"/><Setter TargetName="bd" Property="BorderBrush" Value="#E8A8FF"/></Trigger></ControlTemplate.Triggers>
             </ControlTemplate></Setter.Value></Setter>
         </Style>
+        <Style x:Key="CardButton" TargetType="Button">
+            <Setter Property="Background" Value="#D70A0710"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#3F2450"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="CardBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="12" Padding="14">
+                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CardBorder" Property="Background" Value="#E2140A20"/>
+                                <Setter TargetName="CardBorder" Property="BorderBrush" Value="#A23BFF"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="CardBorder" Property="Background" Value="#F11C0E2B"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="TextInput" TargetType="TextBox">
             <Setter Property="Background" Value="#C40B0711"/><Setter Property="Foreground" Value="White"/><Setter Property="CaretBrush" Value="#C45AFF"/>
             <Setter Property="BorderBrush" Value="#7135B4"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="14,11"/><Setter Property="FontSize" Value="15"/>
@@ -485,13 +515,20 @@ function Get-VexyDiagnosticsText {
             <Grid.ColumnDefinitions><ColumnDefinition Width="235"/><ColumnDefinition Width="*"/><ColumnDefinition Width="290"/></Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="#E5090710" BorderBrush="#47215F" BorderThickness="1" CornerRadius="12" Margin="0,0,12,0">
-                <Grid><Grid.RowDefinitions><RowDefinition Height="160"/><RowDefinition Height="*"/><RowDefinition Height="145"/></Grid.RowDefinitions>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="145"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" VerticalAlignment="Center">
-                        <Image x:Name="SidebarLogo" Height="105" Stretch="Uniform"/>
+                        <Image x:Name="SidebarLogo" Height="100" Stretch="Uniform"/>
                         <TextBlock Text="OPTIMIZER" HorizontalAlignment="Center" Foreground="#A06DBE" FontSize="10"/>
                     </StackPanel>
-                    <StackPanel x:Name="NavPanel" Grid.Row="1"/>
-                    <StackPanel Grid.Row="2" Margin="14" VerticalAlignment="Bottom">
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,0,4">
+                        <StackPanel x:Name="NavPanel"/>
+                    </ScrollViewer>
+                    <StackPanel Grid.Row="2" Margin="14,6,14,14">
                         <Border Background="#500E0716" BorderBrush="#3F2450" BorderThickness="1" CornerRadius="8" Padding="12">
                             <StackPanel>
                                 <TextBlock Text="STATUS" Foreground="#B95CFF" FontWeight="SemiBold"/>
@@ -743,36 +780,81 @@ $script:PageTitles = @{
 
 function New-VexyCard($Item) {
     $button = New-Object System.Windows.Controls.Button
-    $button.Width=205; $button.Height=250; $button.Margin='8'; $button.Padding='0'; $button.Cursor='Hand'; $button.Tag=$Item
-    $button.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#D70A0710')
-    $button.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFromString($(if($Item.Risk -eq 'Advanced'){'#A353E6'}elseif($Item.Risk -eq 'Warning'){'#6F385D'}else{'#3F2450'}))
-    $button.BorderThickness='1'
-    $template = [System.Windows.Markup.XamlReader]::Parse(@'
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
-  <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12" Padding="14">
-    <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
-  </Border>
-  <ControlTemplate.Triggers>
-    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="#E2140A20"/><Setter TargetName="bd" Property="BorderBrush" Value="#A23BFF"/></Trigger>
-  </ControlTemplate.Triggers>
-</ControlTemplate>
-'@)
-    $button.Template=$template
+    $button.Width = 205
+    $button.Height = 250
+    $button.Margin = '8'
+    $button.Tag = $Item
+    $button.Style = $window.Resources['CardButton']
+
+    # Local border color shows normal/warning/advanced risk without reparsing XAML.
+    $borderColor = if ($Item.Risk -eq 'Advanced') { '#A353E6' } elseif ($Item.Risk -eq 'Warning') { '#6F385D' } else { '#3F2450' }
+    $button.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFromString($borderColor)
+
     $stack = New-Object System.Windows.Controls.StackPanel
-    $stack.VerticalAlignment='Center'
+    $stack.VerticalAlignment = 'Center'
+
     $iconPath = Get-VexyIconPath $Item.Icon
     $bmp = New-VexyBitmap $iconPath
     if ($bmp) {
-        $img=New-Object System.Windows.Controls.Image; $img.Source=$bmp; $img.Height=105; $img.Stretch='Uniform'; $img.Margin='0,0,0,8'; $stack.Children.Add($img)|Out-Null
-    } else {
-        $fallback=New-Object System.Windows.Controls.TextBlock; $fallback.Text='✦'; $fallback.FontSize=58; $fallback.Foreground=[System.Windows.Media.BrushConverter]::new().ConvertFromString('#A23BFF'); $fallback.HorizontalAlignment='Center'; $fallback.Margin='0,0,0,10'; $stack.Children.Add($fallback)|Out-Null
+        $img = New-Object System.Windows.Controls.Image
+        $img.Source = $bmp
+        $img.Height = 105
+        $img.Stretch = 'Uniform'
+        $img.Margin = '0,0,0,8'
+        $stack.Children.Add($img) | Out-Null
     }
-    $title=New-Object System.Windows.Controls.TextBlock; $title.Text=$Item.Title; $title.FontSize=15; $title.FontWeight='SemiBold'; $title.Foreground='White'; $title.HorizontalAlignment='Center'; $title.TextAlignment='Center'; $title.Margin='0,0,0,8'; $stack.Children.Add($title)|Out-Null
-    $desc=New-Object System.Windows.Controls.TextBlock; $desc.Text=$Item.Desc; $desc.FontSize=11; $desc.Foreground=[System.Windows.Media.BrushConverter]::new().ConvertFromString('#A696B1'); $desc.TextWrapping='Wrap'; $desc.TextAlignment='Center'; $desc.HorizontalAlignment='Center'; $stack.Children.Add($desc)|Out-Null
-    if ($Item.Risk -eq 'Advanced') { $badge=New-Object System.Windows.Controls.TextBlock; $badge.Text='⚠ ADVANCED'; $badge.Foreground=[System.Windows.Media.BrushConverter]::new().ConvertFromString('#D78CFF'); $badge.FontSize=9; $badge.HorizontalAlignment='Center'; $badge.Margin='0,11,0,0'; $stack.Children.Add($badge)|Out-Null }
-    $button.Content=$stack
+    else {
+        $fallback = New-Object System.Windows.Controls.TextBlock
+        $fallback.Text = '✦'
+        $fallback.FontSize = 58
+        $fallback.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#A23BFF')
+        $fallback.HorizontalAlignment = 'Center'
+        $fallback.Margin = '0,0,0,10'
+        $stack.Children.Add($fallback) | Out-Null
+    }
+
+    $title = New-Object System.Windows.Controls.TextBlock
+    $title.Text = $Item.Title
+    $title.FontSize = 15
+    $title.FontWeight = 'SemiBold'
+    $title.Foreground = 'White'
+    $title.HorizontalAlignment = 'Center'
+    $title.TextAlignment = 'Center'
+    $title.Margin = '0,0,0,8'
+    $stack.Children.Add($title) | Out-Null
+
+    $desc = New-Object System.Windows.Controls.TextBlock
+    $desc.Text = $Item.Desc
+    $desc.FontSize = 11
+    $desc.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#A696B1')
+    $desc.TextWrapping = 'Wrap'
+    $desc.TextAlignment = 'Center'
+    $desc.HorizontalAlignment = 'Center'
+    $stack.Children.Add($desc) | Out-Null
+
+    if ($Item.Risk -eq 'Advanced') {
+        $badge = New-Object System.Windows.Controls.TextBlock
+        $badge.Text = '⚠ ADVANCED'
+        $badge.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#D78CFF')
+        $badge.FontSize = 9
+        $badge.HorizontalAlignment = 'Center'
+        $badge.Margin = '0,11,0,0'
+        $stack.Children.Add($badge) | Out-Null
+    }
+
+    $button.Content = $stack
     $button.Add_MouseEnter({ Play-VexySound 'Hover' })
-    $button.Add_Click({ param($s,$e) try { Play-VexySound 'Click'; Invoke-VexyAction $s.Tag } catch { Add-VexyLog ("Action error: {0}" -f $_.Exception.Message); Play-VexySound 'Warning' } })
+    $button.Add_Click({
+        param($s,$e)
+        try {
+            Play-VexySound 'Click'
+            Invoke-VexyAction $s.Tag
+        }
+        catch {
+            Add-VexyLog ("Action error: {0}" -f $_.Exception.Message)
+            Play-VexySound 'Warning'
+        }
+    })
     return $button
 }
 
