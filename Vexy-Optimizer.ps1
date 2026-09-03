@@ -1,4 +1,4 @@
-﻿# VEXY Optimizer - V6 prototype
+# VEXY Optimizer - V6 prototype
 # Windows PowerShell 5.1 / WPF
 # Public build: activation keys are NOT stored in plaintext.
 
