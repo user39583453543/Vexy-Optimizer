@@ -3,7 +3,7 @@
 # Public build: activation keys are NOT stored in plaintext.
 
 $ErrorActionPreference = 'Continue'
-$script:VexyVersion = '6.0.1-starfix'
+$script:VexyVersion = '6.0.2-enterfix'
 $script:RepoBase = 'https://raw.githubusercontent.com/user39583453543/Vexy-Optimizer/main'
 $script:ScriptUrl = "$script:RepoBase/Vexy-Optimizer.ps1"
 
@@ -543,7 +543,7 @@ function Get-VexyDiagnosticsText {
 
 try {
     $reader = New-Object System.Xml.XmlNodeReader $xaml
-    $window = [Windows.Markup.XamlReader]::Load($reader)
+    $window = [System.Windows.Markup.XamlReader]::Load($reader)
 }
 catch {
     $msg = "VEXY UI failed to load.\n\n$($_.Exception.Message)"
@@ -581,6 +581,7 @@ if ($script:MusicPath -and (Test-Path $script:MusicPath)) {
     } catch {}
 }
 
+# PowerShell 5.1 note: use fully-qualified System.Windows.* WPF type names.
 # ---------- Stars ----------
 $script:Stars = New-Object System.Collections.ArrayList
 $rand = New-Object System.Random
@@ -592,7 +593,7 @@ function Initialize-VexyStars {
         $size = 0.7 + ($rand.NextDouble() * 2.2)
         $dot = New-Object System.Windows.Shapes.Ellipse
         $dot.Width = $size; $dot.Height = $size
-        $dot.Fill = New-Object System.Windows.Media.SolidColorBrush([Windows.Media.Color]::FromArgb([byte](120 + $rand.Next(120)),[byte](170 + $rand.Next(80)),[byte](90 + $rand.Next(90)),[byte]255))
+        $dot.Fill = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.Color]::FromArgb([byte](120 + $rand.Next(120)),[byte](170 + $rand.Next(80)),[byte](90 + $rand.Next(90)),[byte]255))
         $dot.IsHitTestVisible = $false
         [System.Windows.Controls.Canvas]::SetLeft($dot,$rand.NextDouble()*$w); [System.Windows.Controls.Canvas]::SetTop($dot,$rand.NextDouble()*$h)
         $starCanvas.Children.Add($dot) | Out-Null
@@ -606,18 +607,20 @@ catch {
     # Stars are cosmetic; never let the particle layer stop VEXY from launching.
 }
 $script:StarTick = 0.0
-$starTimer = New-Object Windows.Threading.DispatcherTimer
+$starTimer = New-Object System.Windows.Threading.DispatcherTimer
 $starTimer.Interval = [TimeSpan]::FromMilliseconds(50)
 $starTimer.Add_Tick({
-    if (-not $window -or -not $starCanvas) { return }
-    $script:StarTick += 0.05
-    $w = [Math]::Max(1,$window.ActualWidth); $h = [Math]::Max(1,$window.ActualHeight)
-    foreach ($s in $script:Stars) {
-        $x = [System.Windows.Controls.Canvas]::GetLeft($s.Shape) - $s.Speed
-        if ($x -lt -4) { $x = $w + 3; [System.Windows.Controls.Canvas]::SetTop($s.Shape,$rand.NextDouble()*$h) }
-        [System.Windows.Controls.Canvas]::SetLeft($s.Shape,$x)
-        $s.Shape.Opacity = [Math]::Max(0.15,[Math]::Min(0.95,0.52 + 0.38*[Math]::Sin($script:StarTick/$s.Twinkle + $s.Phase)))
-    }
+    try {
+        if (-not $window -or -not $starCanvas) { return }
+        $script:StarTick += 0.05
+        $w = [Math]::Max(1,$window.ActualWidth); $h = [Math]::Max(1,$window.ActualHeight)
+        foreach ($s in $script:Stars) {
+            $x = [System.Windows.Controls.Canvas]::GetLeft($s.Shape) - $s.Speed
+            if ($x -lt -4) { $x = $w + 3; [System.Windows.Controls.Canvas]::SetTop($s.Shape,$rand.NextDouble()*$h) }
+            [System.Windows.Controls.Canvas]::SetLeft($s.Shape,$x)
+            $s.Shape.Opacity = [Math]::Max(0.15,[Math]::Min(0.95,0.52 + 0.38*[Math]::Sin($script:StarTick/$s.Twinkle + $s.Phase)))
+        }
+    } catch {}
 })
 $starTimer.Start()
 
@@ -648,11 +651,21 @@ function Show-VexyActivation {
 }
 
 function Show-VexyMain {
-    $activationView.Visibility='Collapsed'; $loadingView.Visibility='Collapsed'; $mainView.Visibility='Visible'
-    $lic = if ($script:CurrentLicense) { "$($script:CurrentLicense.Label) • $($script:CurrentLicense.Remaining)" } else { 'LICENSE ACTIVE' }
-    $licenseMini.Text = $lic
-    Render-VexyPage 'dashboard'
-    Add-VexyLog 'VEXY session ready.'
+    try {
+        $activationView.Visibility='Collapsed'
+        $loadingView.Visibility='Collapsed'
+        $mainView.Visibility='Visible'
+        $lic = if ($script:CurrentLicense) { "$($script:CurrentLicense.Label) • $($script:CurrentLicense.Remaining)" } else { 'LICENSE ACTIVE' }
+        $licenseMini.Text = $lic
+        Render-VexyPage 'dashboard'
+        Add-VexyLog 'VEXY session ready.'
+    }
+    catch {
+        # Never let a dashboard-render problem terminate the entire app.
+        try { $mainView.Visibility='Collapsed'; $activationView.Visibility='Visible' } catch {}
+        $msg = "VEXY could not open the dashboard.`r`n`r`n$($_.Exception.Message)`r`n`r`nLine: $($_.InvocationInfo.ScriptLineNumber)"
+        try { [System.Windows.Forms.MessageBox]::Show($msg,'VEXY DASHBOARD ERROR',[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null } catch { Write-Host $msg -ForegroundColor Red }
+    }
 }
 
 # ---------- Page/card model ----------
@@ -731,10 +744,10 @@ $script:PageTitles = @{
 function New-VexyCard($Item) {
     $button = New-Object System.Windows.Controls.Button
     $button.Width=205; $button.Height=250; $button.Margin='8'; $button.Padding='0'; $button.Cursor='Hand'; $button.Tag=$Item
-    $button.Background = [Windows.Media.BrushConverter]::new().ConvertFromString('#D70A0710')
-    $button.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString($(if($Item.Risk -eq 'Advanced'){'#A353E6'}elseif($Item.Risk -eq 'Warning'){'#6F385D'}else{'#3F2450'}))
+    $button.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#D70A0710')
+    $button.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFromString($(if($Item.Risk -eq 'Advanced'){'#A353E6'}elseif($Item.Risk -eq 'Warning'){'#6F385D'}else{'#3F2450'}))
     $button.BorderThickness='1'
-    $template = [Windows.Markup.XamlReader]::Parse(@'
+    $template = [System.Windows.Markup.XamlReader]::Parse(@'
 <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
   <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12" Padding="14">
     <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
@@ -752,22 +765,33 @@ function New-VexyCard($Item) {
     if ($bmp) {
         $img=New-Object System.Windows.Controls.Image; $img.Source=$bmp; $img.Height=105; $img.Stretch='Uniform'; $img.Margin='0,0,0,8'; $stack.Children.Add($img)|Out-Null
     } else {
-        $fallback=New-Object System.Windows.Controls.TextBlock; $fallback.Text='✦'; $fallback.FontSize=58; $fallback.Foreground=[Windows.Media.BrushConverter]::new().ConvertFromString('#A23BFF'); $fallback.HorizontalAlignment='Center'; $fallback.Margin='0,0,0,10'; $stack.Children.Add($fallback)|Out-Null
+        $fallback=New-Object System.Windows.Controls.TextBlock; $fallback.Text='✦'; $fallback.FontSize=58; $fallback.Foreground=[System.Windows.Media.BrushConverter]::new().ConvertFromString('#A23BFF'); $fallback.HorizontalAlignment='Center'; $fallback.Margin='0,0,0,10'; $stack.Children.Add($fallback)|Out-Null
     }
     $title=New-Object System.Windows.Controls.TextBlock; $title.Text=$Item.Title; $title.FontSize=15; $title.FontWeight='SemiBold'; $title.Foreground='White'; $title.HorizontalAlignment='Center'; $title.TextAlignment='Center'; $title.Margin='0,0,0,8'; $stack.Children.Add($title)|Out-Null
-    $desc=New-Object System.Windows.Controls.TextBlock; $desc.Text=$Item.Desc; $desc.FontSize=11; $desc.Foreground=[Windows.Media.BrushConverter]::new().ConvertFromString('#A696B1'); $desc.TextWrapping='Wrap'; $desc.TextAlignment='Center'; $desc.HorizontalAlignment='Center'; $stack.Children.Add($desc)|Out-Null
-    if ($Item.Risk -eq 'Advanced') { $badge=New-Object System.Windows.Controls.TextBlock; $badge.Text='⚠ ADVANCED'; $badge.Foreground=[Windows.Media.BrushConverter]::new().ConvertFromString('#D78CFF'); $badge.FontSize=9; $badge.HorizontalAlignment='Center'; $badge.Margin='0,11,0,0'; $stack.Children.Add($badge)|Out-Null }
+    $desc=New-Object System.Windows.Controls.TextBlock; $desc.Text=$Item.Desc; $desc.FontSize=11; $desc.Foreground=[System.Windows.Media.BrushConverter]::new().ConvertFromString('#A696B1'); $desc.TextWrapping='Wrap'; $desc.TextAlignment='Center'; $desc.HorizontalAlignment='Center'; $stack.Children.Add($desc)|Out-Null
+    if ($Item.Risk -eq 'Advanced') { $badge=New-Object System.Windows.Controls.TextBlock; $badge.Text='⚠ ADVANCED'; $badge.Foreground=[System.Windows.Media.BrushConverter]::new().ConvertFromString('#D78CFF'); $badge.FontSize=9; $badge.HorizontalAlignment='Center'; $badge.Margin='0,11,0,0'; $stack.Children.Add($badge)|Out-Null }
     $button.Content=$stack
     $button.Add_MouseEnter({ Play-VexySound 'Hover' })
-    $button.Add_Click({ param($s,$e) Play-VexySound 'Click'; Invoke-VexyAction $s.Tag })
+    $button.Add_Click({ param($s,$e) try { Play-VexySound 'Click'; Invoke-VexyAction $s.Tag } catch { Add-VexyLog ("Action error: {0}" -f $_.Exception.Message); Play-VexySound 'Warning' } })
     return $button
 }
 
 function Render-VexyPage([string]$Page) {
     if (-not $script:Pages.ContainsKey($Page)) { $Page='dashboard' }
-    $pair=$script:PageTitles[$Page]; $pageTitle.Text=$pair[0]; $pageSubtitle.Text=$pair[1]
+    $pair=$script:PageTitles[$Page]
+    $pageTitle.Text=$pair[0]
+    $pageSubtitle.Text=$pair[1]
     $actionGrid.Children.Clear()
-    foreach($item in $script:Pages[$Page]) { $actionGrid.Children.Add((New-VexyCard $item)) | Out-Null }
+    foreach($item in $script:Pages[$Page]) {
+        try {
+            $card = New-VexyCard $item
+            if ($card) { $actionGrid.Children.Add($card) | Out-Null }
+        }
+        catch {
+            # Keep rendering the rest of the dashboard if one card has a problem.
+            Add-VexyLog ("Card render failed: {0} - {1}" -f $item.Title,$_.Exception.Message)
+        }
+    }
 }
 
 function Confirm-Vexy([string]$Title,[string]$Text) {
@@ -811,9 +835,9 @@ function Invoke-VexyAction($Item) {
         'VisualPerformance' { if(Confirm-Vexy 'VISUAL PERFORMANCE' 'This requests Windows Best Performance visual effects and may reduce animations/visual polish. Continue?'){ Run-VexyResult 'Visual effects' { Set-VexyVisualPerformance } } }
         'OpenRestore' { Start-Process 'rstrui.exe'; Add-VexyLog 'Windows System Restore opened.' }
         'ToggleMusic' { $script:MusicEnabled = -not $script:MusicEnabled; if($script:MusicEnabled){$script:MusicPlayer.Play();Add-VexyLog 'Music enabled.'}else{$script:MusicPlayer.Pause();Add-VexyLog 'Music paused.'} }
-        'LicenseInfo' { [Windows.MessageBox]::Show($window,("License: {0}`nRemaining: {1}" -f $script:CurrentLicense.Label,$script:CurrentLicense.Remaining),'VEXY LICENSE') | Out-Null }
-        'Version' { [Windows.MessageBox]::Show($window,"VEXY Optimizer`nBuild $script:VexyVersion",'ABOUT VEXY') | Out-Null }
-        'SafetyInfo' { [Windows.MessageBox]::Show($window,'VEXY does not disable Alt+Tab, Task Manager, Ctrl+Alt+Delete, Windows Recovery, Defender, or other emergency/security controls.','VEXY SAFETY') | Out-Null }
+        'LicenseInfo' { [System.Windows.MessageBox]::Show($window,("License: {0}`nRemaining: {1}" -f $script:CurrentLicense.Label,$script:CurrentLicense.Remaining),'VEXY LICENSE') | Out-Null }
+        'Version' { [System.Windows.MessageBox]::Show($window,"VEXY Optimizer`nBuild $script:VexyVersion",'ABOUT VEXY') | Out-Null }
+        'SafetyInfo' { [System.Windows.MessageBox]::Show($window,'VEXY does not disable Alt+Tab, Task Manager, Ctrl+Alt+Delete, Windows Recovery, Defender, or other emergency/security controls.','VEXY SAFETY') | Out-Null }
     }
 }
 
@@ -832,15 +856,21 @@ foreach($n in $navItems){
 # Activation button
 $activationButton.Add_MouseEnter({Play-VexySound 'Hover'})
 $activationButton.Add_Click({
-    Play-VexySound 'Click'
-    if ($script:CurrentLicense -and $script:CurrentLicense.Valid -and $activationKeyBox.Visibility -eq 'Collapsed') { Show-VexyMain; return }
-    $hash=Get-VexyHash $activationKeyBox.Text
-    if (-not $script:LicenseTable.ContainsKey($hash)) { Play-VexySound 'Warning'; $activationStatus.Foreground='#FF7796'; $activationStatus.Text='INVALID ACTIVATION KEY'; return }
-    $state=Test-VexyLicenseHash $hash $script:LicenseStore -StartIfNew
-    if (-not $state.Valid) { Play-VexySound 'Warning'; $activationStatus.Foreground='#FF7796'; $activationStatus.Text=$state.Reason; Save-VexyLicenseStore $script:LicenseStore; return }
-    $script:LicenseStore.ActiveHash=$hash; Save-VexyLicenseStore $script:LicenseStore; $script:CurrentLicense=$state
-    $activationStatus.Foreground='#66E6A2'; $activationStatus.Text="ACTIVATED • $($state.Label) • $($state.Remaining)"; Play-VexySound 'Success'
-    $activationKeyBox.Visibility='Collapsed'; $activationButton.Content='ENTER VEXY'
+    try {
+        Play-VexySound 'Click'
+        if ($script:CurrentLicense -and $script:CurrentLicense.Valid -and $activationKeyBox.Visibility -eq 'Collapsed') { Show-VexyMain; return }
+        $hash=Get-VexyHash $activationKeyBox.Text
+        if (-not $script:LicenseTable.ContainsKey($hash)) { Play-VexySound 'Warning'; $activationStatus.Foreground='#FF7796'; $activationStatus.Text='INVALID ACTIVATION KEY'; return }
+        $state=Test-VexyLicenseHash $hash $script:LicenseStore -StartIfNew
+        if (-not $state.Valid) { Play-VexySound 'Warning'; $activationStatus.Foreground='#FF7796'; $activationStatus.Text=$state.Reason; Save-VexyLicenseStore $script:LicenseStore; return }
+        $script:LicenseStore.ActiveHash=$hash; Save-VexyLicenseStore $script:LicenseStore; $script:CurrentLicense=$state
+        $activationStatus.Foreground='#66E6A2'; $activationStatus.Text="ACTIVATED • $($state.Label) • $($state.Remaining)"; Play-VexySound 'Success'
+        $activationKeyBox.Visibility='Collapsed'; $activationButton.Content='ENTER VEXY'
+    }
+    catch {
+        $msg = "Activation UI error: $($_.Exception.Message)`r`nLine: $($_.InvocationInfo.ScriptLineNumber)"
+        try { [System.Windows.Forms.MessageBox]::Show($msg,'VEXY ACTIVATION ERROR') | Out-Null } catch { Write-Host $msg -ForegroundColor Red }
+    }
 })
 
 # Exit behavior: dedicated button + normal Windows close route remains available.
@@ -848,19 +878,19 @@ $script:ExitRequested=$false
 $exitButton.Add_MouseEnter({Play-VexySound 'Hover'})
 $exitButton.Add_Click({
     Play-VexySound 'Click'
-    if([Windows.MessageBox]::Show($window,'Exit VEXY?','VEXY',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Question) -eq [Windows.MessageBoxResult]::Yes){$script:ExitRequested=$true;$window.Close()}
+    if([System.Windows.MessageBox]::Show($window,'Exit VEXY?','VEXY',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Question) -eq [System.Windows.MessageBoxResult]::Yes){$script:ExitRequested=$true;$window.Close()}
 })
 $window.Add_Closing({param($s,$e)
     if(-not $script:ExitRequested){
-        $r=[Windows.MessageBox]::Show($window,'Exit VEXY?','VEXY',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Question)
-        if($r -ne [Windows.MessageBoxResult]::Yes){$e.Cancel=$true}else{$script:ExitRequested=$true}
+        $r=[System.Windows.MessageBox]::Show($window,'Exit VEXY?','VEXY',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Question)
+        if($r -ne [System.Windows.MessageBoxResult]::Yes){$e.Cancel=$true}else{$script:ExitRequested=$true}
     }
 })
 
 # Telemetry - lightweight PerformanceCounter + native RAM API.
 $script:CpuCounter=$null
 try { $script:CpuCounter=New-Object System.Diagnostics.PerformanceCounter('Processor','% Processor Time','_Total'); $null=$script:CpuCounter.NextValue() } catch {}
-$telemetryTimer=New-Object Windows.Threading.DispatcherTimer
+$telemetryTimer=New-Object System.Windows.Threading.DispatcherTimer
 $telemetryTimer.Interval=[TimeSpan]::FromMilliseconds(1200)
 $telemetryTimer.Add_Tick({
     if($mainView.Visibility -ne 'Visible'){return}
@@ -882,7 +912,7 @@ $window.Add_ContentRendered({
 # Loading sequence
 $loadSteps=@('PREPARING ENVIRONMENT...','LOADING VEXY CORE...','INITIALIZING VISUAL ENGINE...','READING SYSTEM CAPABILITIES...','LOADING OPTIMIZATION MODULES...','VERIFYING LOCAL LICENSE STORE...','ESTABLISHING VEXY SESSION...','SYSTEM READY')
 $script:LoadIndex=0
-$loadingTimer=New-Object Windows.Threading.DispatcherTimer
+$loadingTimer=New-Object System.Windows.Threading.DispatcherTimer
 $loadingTimer.Interval=[TimeSpan]::FromMilliseconds(520)
 $loadingTimer.Add_Tick({
     if($script:LoadIndex -lt $loadSteps.Count){
